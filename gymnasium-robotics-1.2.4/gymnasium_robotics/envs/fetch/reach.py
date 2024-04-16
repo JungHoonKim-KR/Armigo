@@ -10,23 +10,6 @@ import matplotlib.pyplot as plt
 env = gym.make('FetchReachDense-v2',render_mode="human")
 obs_dim = env.observation_space['observation'].shape[0]
 act_dim = env.action_space.shape[0]
-class OUNoise:
-    def __init__(self, action_dimension, scale=0.1, mu=0, theta=0.15, sigma=0.2):
-        self.action_dimension = action_dimension
-        self.scale = scale
-        self.mu = mu
-        self.theta = theta
-        self.sigma = sigma
-        self.state = np.ones(action_dimension) * mu
-
-    def reset(self):
-        self.state = np.ones(self.action_dimension) * self.mu
-
-    def noise(self):
-        x = self.state
-        dx = self.theta * (self.mu - x) + self.sigma * np.random.randn(len(x))
-        self.state = x + dx
-        return self.state * self.scale
 
 # Actor 네트워크
 class Actor(nn.Module):
@@ -48,11 +31,15 @@ class Actor(nn.Module):
 # Critic 네트워크
 class Critic(nn.Module):
     def __init__(self, obs_dim, act_dim):
+        print(obs_dim)
+        print(act_dim)
         super(Critic, self).__init__()
         self.net = nn.Sequential(
-            nn.Linear(obs_dim + act_dim, 64),
+            nn.Linear(obs_dim + act_dim, 256),
             nn.ReLU(),
-            nn.Linear(64, 64),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
             nn.ReLU(),
             nn.Linear(64, 1)
         )
@@ -107,7 +94,6 @@ class DDPG:
         next_obs = torch.as_tensor(next_obs, dtype=torch.float32).unsqueeze(0)
 
         # 예시: 'next_obs'의 특정 요소(예를 들어 인덱스 0)가 목표에 근접할수록 보상 증가
-        # 이 부분은 환경의 구체적 목표에 맞게 수정 필요
         achieved_goal = torch.as_tensor(achieved_goal, dtype=torch.float32)
         goal = torch.as_tensor(desired_goal, dtype=torch.float32)
         reward = DDPG.compute_reward(achieved_goal, goal)
@@ -116,36 +102,38 @@ class DDPG:
             target_q = reward + 0.99 * self.target_critic(next_obs, next_act) * (1 - done)
 
         # Critic 네트워크 업데이트
-        critic_loss = ((self.critic(obs, act) - target_q)**2).mean()
-        self.critic_optimizer.zero_grad()
-        critic_loss.backward()
-        self.critic_optimizer.step()
+        critic_loss = ((self.critic(obs, act) - target_q)**2).mean() # 관측, 행동을 통한 예측된 가치 - 실제 가치 = 가치 손실, 손실이 0이면 목표 달성
+        self.critic_optimizer.zero_grad() # 초기화
+        critic_loss.backward() # 손실 함수의 기울기를 구하여 네트워크 업데이트
+        self.critic_optimizer.step()  # 방금 구한 기울기를 통해 업데이트
 
         # Actor 네트워크 업데이트
-        actor_loss = -self.critic(obs, self.actor(obs)).mean()
+        actor_loss = -self.critic(obs, self.actor(obs)).mean() # 평가된 값으로 행동의 손실을 줄여감
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
         self.actor_optimizer.step()
-
+        
         return reward
 
 # 메인 학습 루프
 def main():
     ddpg = DDPG(obs_dim, act_dim, act_limit=1)
-    episodes = 50
+    episodes = 10
     rewards = []
     max_steps_per_episode = 100  # 한 에피소드 당 최대 스텝 수
     for ep in range(episodes):
-        observation, info = env.reset()
-        obs = torch.as_tensor(observation['observation'], dtype=torch.float32)
-        desired_goal = torch.as_tensor(observation['desired_goal'], dtype=torch.float32)
+        observation, info = env.reset() # observation : 환경에서 상태값
+        obs = torch.as_tensor(observation['observation'], dtype=torch.float32) 
+        desired_goal = torch.as_tensor(observation['desired_goal'], dtype=torch.float32) # 목표
         done = False
-        total_reward = 0
         steps = 0  # 스텝 카운터 초기화
         while steps<max_steps_per_episode:
-            act = ddpg.select_action(obs)
+            act = ddpg.select_action(obs) 
             # act = ddpg.actor(obs).detach().numpy()
             next_observation, reward, done, info,_ = env.step(act)
+            if(reward == 0.0):
+                done  = True
+                break
             next_obs = next_observation['observation']
             next_obs = torch.as_tensor(next_obs, dtype=torch.float32)  # 다음 관측값을 Tensor로 변환
     
@@ -154,9 +142,11 @@ def main():
             obs = next_obs  # 다음 상태를 현재 상태로 업데이트
             env.render()
             steps+=1
-            total_reward += reward
-        rewards.append(total_reward)
-        print(f"Episode {ep + 1}: Total Reward = {total_reward}")
+            print(f"reward: {reward}, customReward :{custom_reward}")
+            rewards.append(reward)
+        if(done):
+         print("성공!")
+         break
     # 보상 시각화
     plt.plot(rewards)
     plt.xlabel('Episode')
